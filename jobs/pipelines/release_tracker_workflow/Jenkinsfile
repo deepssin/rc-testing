@@ -36,7 +36,7 @@ pipeline {
                     dir("${env.CEPH_DIR}") {
                         checkout([$class: "GitSCM", branches: [[name: "${params.CEPH_BRANCH}"]],
                             extensions: [[$class: "CloneOption", depth: 1, shallow: true]],
-                            userRemoteConfigs: [[url: "${params.CEPH_REPO}"]])
+                            userRemoteConfigs: [[url: "${params.CEPH_REPO}"]]])
                         env.SHA1 = sh(script: 'git rev-parse HEAD 2>/dev/null || echo "unknown"', returnStdout: true).trim()
                     }
                     echo "Branch: ${params.CEPH_BRANCH} | SHA1: ${env.SHA1}"
