@@ -217,7 +217,9 @@ def scheduleSuiteAndWait(String branch, String sha1, String suiteName) {
             def start = i + prefix.length()
             def lineEnd = out.indexOf('\n', start)
             if (lineEnd < 0) lineEnd = out.length()
-            runName = out.substring(start, lineEnd).trim()
+            def restOfLine = out.substring(start, lineEnd).trim()
+            // Run name is the first token (no spaces); output may add " and ID 1234" etc.
+            runName = restOfLine.split()[0]
         }
         if (!runName) runName = "${sh(script: 'whoami', returnStdout: true).trim()}-${ts}-${suiteName.replaceAll('/', ':')}-${branch}-distro-default-openstack"
         sleep(time: 15, unit: 'SECONDS')
