@@ -211,10 +211,13 @@ def scheduleSuiteAndWait(String branch, String sha1, String suiteName) {
         sh(script: "bash -c '${cmd}' > ${outFile} 2>&1; true", returnStatus: true)
         def out = readFile(outFile)
         def runName = null
-        def i = out.indexOf('Job scheduled with name ')
+        def prefix = 'Job scheduled with name '
+        def i = out.indexOf(prefix)
         if (i >= 0) {
-            def j = out.indexOf(' ', i + 25); if (j < 0) j = out.indexOf('\n', i); if (j < 0) j = out.length()
-            if (j > i) runName = out.substring(i + 25, j).trim()
+            def start = i + prefix.length()
+            def lineEnd = out.indexOf('\n', start)
+            if (lineEnd < 0) lineEnd = out.length()
+            runName = out.substring(start, lineEnd).trim()
         }
         if (!runName) runName = "${sh(script: 'whoami', returnStdout: true).trim()}-${ts}-${suiteName.replaceAll('/', ':')}-${branch}-distro-default-openstack"
         sleep(time: 15, unit: 'SECONDS')
