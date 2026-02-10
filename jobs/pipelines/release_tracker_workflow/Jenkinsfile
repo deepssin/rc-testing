@@ -18,7 +18,7 @@ pipeline {
         string(name: 'CEPH_REPO', defaultValue: 'https://github.com/ceph/ceph.git')
         string(name: 'CEPH_BRANCH', defaultValue: 'reef')
         string(name: 'RELEASE_VERSION', defaultValue: '20.1.0')
-        string(name: 'TRACKER_ISSUE_ID', defaultValue: '72316')
+        string(name: 'TRACKER_ISSUE_ID', defaultValue: '', description: 'Redmine tracker issue ID. Required when posting to tracker.')
         string(name: 'BUILD_JOB_NAME', defaultValue: 'sample-ceph-pipeline')
         string(name: 'SUITE_NAME', defaultValue: 'smoke', description: 'Single suite when SUITE_LIST_SOURCE is empty')
         string(name: 'SUITE_LIST_SOURCE', defaultValue: '', description: 'Live read: path (e.g. config/suites_reef.yaml) or URL returning list of suite names for this release. Empty = use SUITE_NAME.')
@@ -26,7 +26,7 @@ pipeline {
         string(name: 'EMAIL_RECIPIENTS', defaultValue: '', description: 'Comma-separated emails to notify when run finishes. Empty = no email.')
         booleanParam(name: 'SKIP_BUILD', defaultValue: false)
         booleanParam(name: 'SKIP_INTEGRATION_TESTS', defaultValue: false)
-        booleanParam(name: 'SKIP_TRACKER_UPDATE', defaultValue: false)
+        booleanParam(name: 'SKIP_TRACKER_UPDATE', defaultValue: true, description: 'If true, do not post to Redmine. Enable only when you want to update the tracker.')
     }
     stages {
         stage('Checkout and Resolve SHA1') {
@@ -137,13 +137,13 @@ pipeline {
             }
         }
         stage('Update tracker') {
-            when { expression { return !params.SKIP_TRACKER_UPDATE } }
+            when { expression { return !params.SKIP_TRACKER_UPDATE && params.TRACKER_ISSUE_ID?.trim() } }
             steps {
                 script {
                     def scriptPath = "${WORKSPACE}/jobs/pipelines/release_tracker_workflow/scripts/redmine_post_note.sh"
                     if (!fileExists(scriptPath)) scriptPath = "${WORKSPACE}/../jobs/pipelines/release_tracker_workflow/scripts/redmine_post_note.sh"
                     withCredentials([string(credentialsId: 'redmine-api-key', variable: 'REDMINE_API_KEY')]) {
-                        if (fileExists(scriptPath)) sh "bash ${scriptPath} ${params.TRACKER_ISSUE_ID} ${WORKSPACE}/tracker_note.txt"
+                        if (fileExists(scriptPath)) sh "bash ${scriptPath} ${params.TRACKER_ISSUE_ID.trim()} ${WORKSPACE}/tracker_note.txt"
                         else echo "Redmine script not found; post tracker_note.txt manually to #${params.TRACKER_ISSUE_ID}"
                     }
                 }
@@ -152,7 +152,7 @@ pipeline {
         stage('Draft release notes') {
             steps {
                 script {
-                    writeFile file: "${WORKSPACE}/release_notes_draft.md", text: "# Ceph ${params.RELEASE_VERSION} (${params.CEPH_BRANCH})\n\nBranch: ${params.CEPH_BRANCH}\nSHA1: ${env.SHA1}\nBuild: ${env.DOWNSTREAM_BUILD_URL}\nSuite: ${env.TEUTHOLOGY_RUN_NAME ?: 'N/A'}\n\nTracker #${params.TRACKER_ISSUE_ID}."
+                    writeFile file: "${WORKSPACE}/release_notes_draft.md", text: "# Ceph ${params.RELEASE_VERSION} (${params.CEPH_BRANCH})\n\nBranch: ${params.CEPH_BRANCH}\nSHA1: ${env.SHA1}\nBuild: ${env.DOWNSTREAM_BUILD_URL}\nSuite: ${env.TEUTHOLOGY_RUN_NAME ?: 'N/A'}\n\nTracker #${params.TRACKER_ISSUE_ID ?: '(not set)'}."
                     archiveArtifacts artifacts: "release_notes_draft.md", allowEmptyArchive: true
                 }
             }

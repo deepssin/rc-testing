@@ -6,26 +6,14 @@ The release-tracker workflow pipeline is parameterized so one job can drive mult
 
 ## Trackers
 
-| Tracker | Release | Branch | Version | Notes |
-|--------|---------|--------|---------|------|
-| [#72316](https://tracker.ceph.com/issues/72316) | tentacle 20.1.0 RC0 | tentacle | 20.1.0 | Stable release workflow (resolved). |
-| [#73906](https://tracker.ceph.com/issues/73906) | reef v18.2.8 | reef | 18.2.8 | Stable release workflow (open). Same workflow: approvals, branch SHA, integration tests, packages, release notes, announcement. |
+Set **TRACKER_ISSUE_ID** to the Redmine issue ID for the release you are testing (e.g. from tracker.ceph.com). No default is set; you must supply the ID when you want to post to a tracker.
 
----
+**Example parameters for a release:**
+- `TRACKER_ISSUE_ID` = issue number (e.g. 72316, 73906)
+- `CEPH_BRANCH` = branch (e.g. tentacle, reef)
+- `RELEASE_VERSION` = version (e.g. 20.1.0, 18.2.8)
 
-## Parameters to run for each tracker
-
-**For [#72316](https://tracker.ceph.com/issues/72316) (tentacle 20.1.0 RC0):**
-- `TRACKER_ISSUE_ID` = **72316**
-- `CEPH_BRANCH` = **tentacle**
-- `RELEASE_VERSION` = **20.1.0**
-
-**For [#73906](https://tracker.ceph.com/issues/73906) (reef v18.2.8):**
-- `TRACKER_ISSUE_ID` = **73906**
-- `CEPH_BRANCH` = **reef**
-- `RELEASE_VERSION` = **18.2.8**
-
-All other parameters (CEPH_REPO, BUILD_JOB_NAME, SKIP_*) stay as default unless you need to override. The pipeline will post build + smoke links and draft release notes to the chosen tracker issue.
+All other parameters (CEPH_REPO, BUILD_JOB_NAME, SKIP_*) stay as default unless you need to override. The pipeline will post build + suite links and draft release notes to the chosen tracker issue when **SKIP_TRACKER_UPDATE** is false and **TRACKER_ISSUE_ID** is set.
 
 ---
 
@@ -33,7 +21,7 @@ All other parameters (CEPH_REPO, BUILD_JOB_NAME, SKIP_*) stay as default unless 
 
 Your flow matches how the tracker release process is intended to work. Comparison:
 
-| Step | Your flow | Tracker (#72316 / #73906) | Current pipeline |
+| Step | Your flow | Tracker | Current pipeline |
 |------|-----------|---------------------------|------------------|
 | **1** | SHA1 | “Current SHA1: see in note below” / branch + commit | ✅ Resolve SHA from branch checkout |
 | **2** | branch/ceph-ci ref | “branch to build from: reef” (ref = branch or SHA) | ✅ CEPH_BRANCH (+ optional CEPH_SHA1 on build) |
