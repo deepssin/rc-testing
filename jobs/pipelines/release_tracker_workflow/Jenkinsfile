@@ -1,0 +1,224 @@
+/**
+ * Release tracker workflow: SHA1 -> build -> wait Shaman (preferred) -> schedule suites -> aggregate -> report to Redmine + email.
+ * - Preferred route: Shaman (wait for SHA1, then use --sha1 for suites).
+ * - Email: optional notification when run finishes (set EMAIL_RECIPIENTS).
+ * - Live suite list: optional SUITE_LIST_SOURCE (file path or URL) to run a set of tests per release.
+ */
+pipeline {
+    agent { label 'teuthology-agent' }
+    options { timestamps(); timeout(time: 24, unit: 'HOURS'); buildDiscarder(logRotator(numToKeepStr: '30')) }
+    environment {
+        SCRIPT_DIR = '/home/ubuntu/teuthology'
+        VIRTUALENV_PATH = '/home/ubuntu/teuthology/virtualenv'
+        OVERRIDE_YAML = '/home/ubuntu/override.yaml'
+        CEPH_DIR = "${WORKSPACE}/ceph"
+        PULPITO_BASE = 'https://pulpito.ceph.com'
+    }
+    parameters {
+        string(name: 'CEPH_REPO', defaultValue: 'https://github.com/ceph/ceph.git')
+        string(name: 'CEPH_BRANCH', defaultValue: 'reef')
+        string(name: 'RELEASE_VERSION', defaultValue: '20.1.0')
+        string(name: 'TRACKER_ISSUE_ID', defaultValue: '72316')
+        string(name: 'BUILD_JOB_NAME', defaultValue: 'sample-ceph-pipeline')
+        string(name: 'SUITE_NAME', defaultValue: 'smoke', description: 'Single suite when SUITE_LIST_SOURCE is empty')
+        string(name: 'SUITE_LIST_SOURCE', defaultValue: '', description: 'Live read: path (e.g. config/suites_reef.yaml) or URL returning list of suite names for this release. Empty = use SUITE_NAME.')
+        string(name: 'PADDLES_URL', defaultValue: 'http://paddles.front.sepia.ceph.com/')
+        string(name: 'EMAIL_RECIPIENTS', defaultValue: '', description: 'Comma-separated emails to notify when run finishes. Empty = no email.')
+        booleanParam(name: 'SKIP_BUILD', defaultValue: false)
+        booleanParam(name: 'SKIP_INTEGRATION_TESTS', defaultValue: false)
+        booleanParam(name: 'SKIP_TRACKER_UPDATE', defaultValue: false)
+    }
+    stages {
+        stage('Checkout and Resolve SHA1') {
+            steps {
+                checkout scm
+                script {
+                    dir("${env.CEPH_DIR}") {
+                        checkout([$class: "GitSCM", branches: [[name: "${params.CEPH_BRANCH}"]],
+                            extensions: [[$class: "CloneOption", depth: 1, shallow: true]],
+                            userRemoteConfigs: [[url: "${params.CEPH_REPO}"]])
+                        env.SHA1 = sh(script: 'git rev-parse HEAD 2>/dev/null || echo "unknown"', returnStdout: true).trim()
+                    }
+                    echo "Branch: ${params.CEPH_BRANCH} | SHA1: ${env.SHA1}"
+                }
+            }
+        }
+        stage('Approval gate') {
+            steps { input message: "Lead approvals done for ${params.RELEASE_VERSION}? Proceed?", ok: 'Proceed' }
+        }
+        stage('Build') {
+            when { expression { return !params.SKIP_BUILD } }
+            steps {
+                script {
+                    def baseVer = params.RELEASE_VERSION.contains('.') ? (params.RELEASE_VERSION.tokenize('.')[0] + '.0.0') : '20.0.0'
+                    def b = build job: params.BUILD_JOB_NAME, parameters: [
+                        string(name: 'CEPH_REPO', value: params.CEPH_REPO),
+                        string(name: 'CEPH_BRANCH', value: params.CEPH_BRANCH),
+                        string(name: 'CEPH_SHA1', value: env.SHA1),
+                        string(name: 'BASE_VERSION', value: baseVer),
+                        string(name: 'DISTRO', value: 'centos'), string(name: 'RELEASE', value: '9'),
+                        string(name: 'DIST', value: 'el9'), string(name: 'FLAVOR', value: 'default'),
+                        string(name: 'RPM_BUILD_OPTS', value: '--with tcmalloc --without selinux --without lto')
+                    ], wait: true, propagate: true
+                    env.DOWNSTREAM_BUILD_URL = b.absoluteUrl
+                }
+            }
+        }
+        stage('Wait for Shaman') {
+            when { expression { return !params.SKIP_INTEGRATION_TESTS } }
+            steps {
+                script {
+                    // Preferred route: always wait for this SHA1 on Shaman, then use --sha1 for suites
+                    def w = "${WORKSPACE}/scripts/wait_for_shaman_sha1.py"
+                    if (fileExists(w)) sh "python3 ${w} --branch ${params.CEPH_BRANCH} --sha1 ${env.SHA1} --timeout 3600 --interval 120"
+                    else echo "wait_for_shaman_sha1.py not found; continuing."
+                }
+            }
+        }
+        stage('Resolve suite list') {
+            when { expression { return !params.SKIP_INTEGRATION_TESTS } }
+            steps {
+                script {
+                    env.SUITE_LIST = resolveSuiteList(params.SUITE_LIST_SOURCE, params.SUITE_NAME, params.CEPH_BRANCH, params.RELEASE_VERSION)
+                    echo "Suites to run: ${env.SUITE_LIST}"
+                }
+            }
+        }
+        stage('Schedule suites') {
+            when { expression { return !params.SKIP_INTEGRATION_TESTS } }
+            steps {
+                script {
+                    def suites = env.SUITE_LIST?.split(',')?.collect { it.trim() }?.findAll { it } ?: [params.SUITE_NAME]
+                    def runNames = []
+                    def tables = []
+                    for (suite in suites) {
+                        def runName = scheduleSuiteAndWait(params.CEPH_BRANCH, env.SHA1, suite)
+                        if (runName) {
+                            runNames << runName
+                            def a = "${WORKSPACE}/scripts/aggregate_suite_results.py"
+                            def safeName = suite.replaceAll('/','_')
+                            if (fileExists(a)) {
+                                sh "python3 ${a} --run ${runName} --paddles-url ${params.PADDLES_URL} --out ${WORKSPACE}/agg_${safeName}.txt"
+                                if (fileExists("${WORKSPACE}/agg_${safeName}.txt")) tables << "${suite}:\n${readFile("${WORKSPACE}/agg_${safeName}.txt")}"
+                            }
+                        }
+                    }
+                    env.TEUTHOLOGY_RUN_NAMES = runNames.join(',')
+                    env.TEUTHOLOGY_RUN_NAME = runNames ? runNames[0] : 'N/A'
+                    if (tables) writeFile file: "${WORKSPACE}/aggregate_table.txt", text: tables.join("\n\n")
+                    else if (!fileExists("${WORKSPACE}/aggregate_table.txt")) writeFile file: "${WORKSPACE}/aggregate_table.txt", text: "Runs: ${env.TEUTHOLOGY_RUN_NAMES}"
+                }
+            }
+        }
+        stage('Aggregate results') {
+            when { expression { return !params.SKIP_INTEGRATION_TESTS && env.TEUTHOLOGY_RUN_NAME != 'N/A' } }
+            steps {
+                script {
+                    if (!fileExists("${WORKSPACE}/aggregate_table.txt")) {
+                        def a = "${WORKSPACE}/scripts/aggregate_suite_results.py"
+                        if (fileExists(a)) sh "python3 ${a} --run ${env.TEUTHOLOGY_RUN_NAME} --paddles-url ${params.PADDLES_URL} --out ${WORKSPACE}/aggregate_table.txt"
+                        else writeFile file: "${WORKSPACE}/aggregate_table.txt", text: "Run: ${env.TEUTHOLOGY_RUN_NAME}"
+                    }
+                }
+            }
+        }
+        stage('Tag and artifacts') {
+            steps {
+                script {
+                    if (!env.TEUTHOLOGY_RUN_NAME) env.TEUTHOLOGY_RUN_NAME = 'skipped'
+                    if (!env.TEUTHOLOGY_RUN_NAMES) env.TEUTHOLOGY_RUN_NAMES = env.TEUTHOLOGY_RUN_NAME
+                    if (!env.DOWNSTREAM_BUILD_URL) env.DOWNSTREAM_BUILD_URL = 'N/A'
+                    def runLinks = (env.TEUTHOLOGY_RUN_NAMES && env.TEUTHOLOGY_RUN_NAMES != 'skipped') ? env.TEUTHOLOGY_RUN_NAMES.split(',').findAll { it.trim() }.collect { env.PULPITO_BASE + '/' + it.trim() }.join(' ') : (env.TEUTHOLOGY_RUN_NAMES ?: 'skipped')
+                    def lines = ["Release workflow: ${env.BUILD_URL}", "Version: ${params.RELEASE_VERSION} | Branch: ${params.CEPH_BRANCH}", "SHA1: ${env.SHA1}", "Build: ${env.DOWNSTREAM_BUILD_URL}", "Suite run(s): ${runLinks}"]
+                    if (fileExists("${WORKSPACE}/aggregate_table.txt")) lines += ["", readFile("${WORKSPACE}/aggregate_table.txt")]
+                    writeFile file: "${WORKSPACE}/tracker_note.txt", text: lines.join("\n")
+                    archiveArtifacts artifacts: "tracker_note.txt,aggregate_table.txt", allowEmptyArchive: true
+                }
+            }
+        }
+        stage('Update tracker') {
+            when { expression { return !params.SKIP_TRACKER_UPDATE } }
+            steps {
+                script {
+                    def scriptPath = "${WORKSPACE}/jobs/pipelines/release_tracker_workflow/scripts/redmine_post_note.sh"
+                    if (!fileExists(scriptPath)) scriptPath = "${WORKSPACE}/../jobs/pipelines/release_tracker_workflow/scripts/redmine_post_note.sh"
+                    withCredentials([string(credentialsId: 'redmine-api-key', variable: 'REDMINE_API_KEY')]) {
+                        if (fileExists(scriptPath)) sh "bash ${scriptPath} ${params.TRACKER_ISSUE_ID} ${WORKSPACE}/tracker_note.txt"
+                        else echo "Redmine script not found; post tracker_note.txt manually to #${params.TRACKER_ISSUE_ID}"
+                    }
+                }
+            }
+        }
+        stage('Draft release notes') {
+            steps {
+                script {
+                    writeFile file: "${WORKSPACE}/release_notes_draft.md", text: "# Ceph ${params.RELEASE_VERSION} (${params.CEPH_BRANCH})\n\nBranch: ${params.CEPH_BRANCH}\nSHA1: ${env.SHA1}\nBuild: ${env.DOWNSTREAM_BUILD_URL}\nSuite: ${env.TEUTHOLOGY_RUN_NAME ?: 'N/A'}\n\nTracker #${params.TRACKER_ISSUE_ID}."
+                    archiveArtifacts artifacts: "release_notes_draft.md", allowEmptyArchive: true
+                }
+            }
+        }
+    }
+    post {
+        success { echo "Done." }
+        failure { echo "Failed." }
+        always {
+            script {
+                if (params.EMAIL_RECIPIENTS?.trim()) {
+                    def body = "RC testing flow: ${env.JOB_NAME} #${env.BUILD_NUMBER}\nResult: ${currentBuild.currentResult}\nBuild: ${env.BUILD_URL}\n"
+                    if (fileExists("${WORKSPACE}/tracker_note.txt")) body += "\nSummary:\n${readFile("${WORKSPACE}/tracker_note.txt").take(2000)}"
+                    try {
+                        mail to: params.EMAIL_RECIPIENTS.trim(),
+                             subject: "RC testing ${env.JOB_NAME} #${env.BUILD_NUMBER} - ${currentBuild.currentResult}",
+                             body: body
+                    } catch (Exception e) {
+                        echo "Email failed: ${e.message}"
+                    }
+                }
+            }
+        }
+    }
+}
+
+def resolveSuiteList(String source, String defaultSuite, String branch, String version) {
+    if (!source?.trim()) return defaultSuite
+    def raw = null
+    if (source.trim().toLowerCase().startsWith('http')) {
+        raw = sh(script: "curl -sL '${source}'", returnStdout: true).trim()
+    } else {
+        def path = source.trim()
+        if (path.contains('${') || path.contains('branch') || path.contains('version')) {
+            path = path.replace('${branch}', branch).replace('${version}', version).replace('${BRANCH}', branch).replace('${VERSION}', version)
+        }
+        if (!path.startsWith('/')) path = "${WORKSPACE}/${path}"
+        if (fileExists(path)) raw = readFile(path).trim()
+    }
+    if (!raw) return defaultSuite
+    // Support: one suite per line, or YAML "suites:\n  - smoke\n  - rados"
+    def list = []
+    raw.eachLine { line ->
+        def t = line.trim()
+        if (t.startsWith('-')) list << t.drop(1).trim()
+        else if (t && !t.startsWith('#') && !t.startsWith('suites:')) list << t
+    }
+    return list ? list.join(',') : defaultSuite
+}
+
+def scheduleSuiteAndWait(String branch, String sha1, String suiteName) {
+    dir(env.SCRIPT_DIR) {
+        def ts = sh(script: 'date "+%Y-%m-%d_%H:%M:%S"', returnStdout: true).trim()
+        def cmd = "${VIRTUALENV_PATH}/bin/teuthology-suite --suite \"${suiteName}\" --machine-type openstack --ceph \"${branch}\" --ceph-repo https://github.com/ceph/ceph --limit 1 --job-threshold 1 --subset 1/10000 --sha1 ${sha1} ${OVERRIDE_YAML}"
+        def outFile = "${env.WORKSPACE}/suite_out.txt"
+        sh(script: "bash -c '${cmd}' > ${outFile} 2>&1; true", returnStatus: true)
+        def out = readFile(outFile)
+        def runName = null
+        def i = out.indexOf('Job scheduled with name ')
+        if (i >= 0) {
+            def j = out.indexOf(' ', i + 25); if (j < 0) j = out.indexOf('\n', i); if (j < 0) j = out.length()
+            if (j > i) runName = out.substring(i + 25, j).trim()
+        }
+        if (!runName) runName = "${sh(script: 'whoami', returnStdout: true).trim()}-${ts}-${suiteName.replaceAll('/', ':')}-${branch}-distro-default-openstack"
+        sleep(time: 15, unit: 'SECONDS')
+        sh(script: "${VIRTUALENV_PATH}/bin/teuthology-wait --run ${runName}", returnStatus: true)
+        return runName
+    }
+}

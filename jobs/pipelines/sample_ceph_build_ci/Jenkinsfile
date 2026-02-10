@@ -1,0 +1,127 @@
+pipeline {
+    agent {
+        node {
+            label "ceph-build-centos9-agent"
+        }
+    }
+
+    options {
+        // Keep the last 20 builds
+        buildDiscarder(logRotator(numToKeepStr: "20"))
+
+        // Do not checkout code automatically
+        skipDefaultCheckout()
+
+        // Timestamps in console output
+        timestamps()
+
+        // Colorize console output
+        ansiColor("xterm")
+    }
+
+    environment {
+        // Environment & Variable Setup
+        REPO_URL="https://shaman.ceph.com/r/ceph"
+
+        // Set user build parameters
+        BASE_VERSION="${params.BASE_VERSION}"
+        RPM_BUILD_OPTS="${params.RPM_BUILD_OPTS}"
+
+        // Set up a build paths for artifacts
+        RPM_BUILDAREA="${WORKSPACE}/rpm/${params.DIST}"
+        RELEASE_BUILDAREA="${WORKSPACE}/release/${params.DIST}"
+        CEPH_DIR="${WORKSPACE}/ceph"
+    }
+
+    stages {
+        stage("Checkout Pipeline Code") {
+            steps {
+                // Pull the Jenkinsfile repository
+                checkout scm
+            }
+        }
+
+        stage("Set Ceph Repository") {
+            steps {
+                echo "Checking out Ceph source code ..."
+
+                // Pull Ceph source code
+                dir("${CEPH_DIR}") {
+                    script {
+                        echo "Updating existing repository and submodules ..."
+                        checkout([
+                            $class: "GitSCM",
+                            branches: [[name: "${params.CEPH_BRANCH}"]],
+                            extensions: [
+                                [$class: "CleanBeforeCheckout", deleteUntrackedNestedRepositories: true],
+                                [$class: "CloneOption", depth: 1, shallow: true],
+                                [$class: "SubmoduleOption",
+                                    disableSubmodules: false,
+                                    parentCredentials: true,
+                                    recursiveSubmodules: true,
+                                    shallow: true
+                                ]
+                            ],
+                            userRemoteConfigs: [[url: "${params.CEPH_REPO}"]]
+                        ])
+                    }
+                }
+            }
+        }
+
+        stage("Set Environment") {
+            steps {
+                echo "Preparing the Ceph build environment ..."
+
+                // Run setup_rpm script to prepare the build environment
+                dir("${CEPH_DIR}") {
+                    script {
+                        // Verify commit and get sha and short sha from git
+                        sh 'git log -1 --oneline'
+                        env.SHA1 = sh(
+                            script: 'git rev-parse HEAD 2>/dev/null || echo "unknown"',
+                            returnStdout: true
+                        ).trim()
+                        env.SHORT_SHA = sh(
+                            script: 'git rev-parse --short HEAD 2>/dev/null || echo "unknown"',
+                            returnStdout: true
+                        ).trim()
+
+                        // Set repo url for shaman
+                        env.REPO_URL = "${REPO_URL}/${params.CEPH_BRANCH}/${SHA1}/${params.DISTRO}/${params.RELEASE}/flavors/${params.FLAVOR}"
+                    }
+                }
+            }
+        }
+
+        stage("Build RPMs") {
+            steps {
+                echo "Running the Ceph RPM build script ..."
+
+                // Run bash script you mentioned earlier
+                dir("${CEPH_DIR}") {
+                    script {
+                        sh "chmod +x ${WORKSPACE}/containers/agents/build/centos-9/build_rpm"
+                        sh "source ${WORKSPACE}/containers/agents/build/centos-9/build_rpm"
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "RPMs built successfully! Archiving ..."
+            script {
+                // Save the RPMs
+                sh "mkdir -p artifacts"
+                sh "find ${RPM_BUILDAREA} -name \"*.rpm\" -exec cp {} artifacts/ \\;"
+                archiveArtifacts artifacts: "artifacts/*.rpm", allowEmptyArchive: false
+            }
+        }
+
+        failure {
+            echo "Build failed. Check the logs for GCC or CMake errors."
+        }
+    }
+}
