@@ -28,7 +28,7 @@ pipelineJob('release_tracker_workflow') {
         stringParam("SUITE_LIST_SOURCE", "", "Live read: file path or URL of suite list for this release (e.g. config/suites_reef.yaml). Empty = use SUITE_NAME.")
         stringParam("PADDLES_URL", "http://paddles.front.sepia.ceph.com/", "Paddles base URL for aggregation")
         stringParam("EMAIL_RECIPIENTS", "", "Comma-separated emails to notify when run finishes. Empty = no email.")
-        booleanParam("SKIP_BUILD", false, "Skip build (use existing SHA1 on Shaman)")
+        booleanParam("SKIP_BUILD", true, "If true, do not trigger the build job. Only check Shaman for the resolved SHA1.")
         booleanParam("SKIP_INTEGRATION_TESTS", false, "Skip teuthology suite")
         booleanParam("SKIP_TRACKER_UPDATE", true, "If true, do not post to Redmine. Enable only when you want to update the tracker.")
     }

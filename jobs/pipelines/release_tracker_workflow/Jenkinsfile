@@ -24,7 +24,7 @@ pipeline {
         string(name: 'SUITE_LIST_SOURCE', defaultValue: '', description: 'Live read: path (e.g. config/suites_reef.yaml) or URL returning list of suite names for this release. Empty = use SUITE_NAME.')
         string(name: 'PADDLES_URL', defaultValue: 'http://paddles.front.sepia.ceph.com/')
         string(name: 'EMAIL_RECIPIENTS', defaultValue: '', description: 'Comma-separated emails to notify when run finishes. Empty = no email.')
-        booleanParam(name: 'SKIP_BUILD', defaultValue: false)
+        booleanParam(name: 'SKIP_BUILD', defaultValue: true, description: 'If true, do not trigger the build job. Only check Shaman for the resolved SHA1.')
         booleanParam(name: 'SKIP_INTEGRATION_TESTS', defaultValue: false)
         booleanParam(name: 'SKIP_TRACKER_UPDATE', defaultValue: true, description: 'If true, do not post to Redmine. Enable only when you want to update the tracker.')
     }
