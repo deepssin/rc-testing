@@ -89,18 +89,32 @@ pipeline {
             steps {
                 script {
                     def suites = env.SUITE_LIST?.split(',')?.collect { it.trim() }?.findAll { it } ?: [params.SUITE_NAME]
-                    def runNames = []
-                    def tables = []
+                    def runInfos = []  // [suite, runName] for each scheduled run
+                    // Trigger all suites at once (no wait between schedule calls)
                     for (suite in suites) {
-                        def runName = scheduleSuiteAndWait(params.CEPH_BRANCH, env.SHA1, suite)
-                        if (runName) {
-                            runNames << runName
-                            def a = "${WORKSPACE}/scripts/aggregate_suite_results.py"
-                            def safeName = suite.replaceAll('/','_')
-                            if (fileExists(a)) {
-                                sh "python3 ${a} --run ${runName} --paddles-url ${params.PADDLES_URL} --out ${WORKSPACE}/agg_${safeName}.txt"
-                                if (fileExists("${WORKSPACE}/agg_${safeName}.txt")) tables << "${suite}:\n${readFile("${WORKSPACE}/agg_${safeName}.txt")}"
+                        def runName = scheduleSuiteOnly(params.CEPH_BRANCH, env.SHA1, suite)
+                        if (runName) runInfos << [suite, runName]
+                    }
+                    def runNames = runInfos.collect { it[1] }
+                    // Wait for all runs to complete
+                    if (runNames) {
+                        sleep(time: 15, unit: 'SECONDS')
+                        dir(env.SCRIPT_DIR) {
+                            for (runName in runNames) {
+                                sh(script: "${VIRTUALENV_PATH}/bin/teuthology-wait --run ${runName}", returnStatus: true)
                             }
+                        }
+                    }
+                    // Aggregate and report
+                    def tables = []
+                    for (info in runInfos) {
+                        def suite = info[0]
+                        def runName = info[1]
+                        def safeName = suite.toString().replaceAll('/','_')
+                        def a = "${WORKSPACE}/scripts/aggregate_suite_results.py"
+                        if (fileExists(a)) {
+                            sh "python3 ${a} --run ${runName} --paddles-url ${params.PADDLES_URL} --out ${WORKSPACE}/agg_${safeName}.txt"
+                            if (fileExists("${WORKSPACE}/agg_${safeName}.txt")) tables << "${suite}:\n${readFile("${WORKSPACE}/agg_${safeName}.txt")}"
                         }
                     }
                     env.TEUTHOLOGY_RUN_NAMES = runNames.join(',')
@@ -203,11 +217,13 @@ def resolveSuiteList(String source, String defaultSuite, String branch, String v
     return list ? list.join(',') : defaultSuite
 }
 
-def scheduleSuiteAndWait(String branch, String sha1, String suiteName) {
+/** Schedule one suite (no wait). Returns run name or null. Uses --limit 1 for trial/testing. */
+def scheduleSuiteOnly(String branch, String sha1, String suiteName) {
     dir(env.SCRIPT_DIR) {
         def ts = sh(script: 'date "+%Y-%m-%d_%H:%M:%S"', returnStdout: true).trim()
         def cmd = "${VIRTUALENV_PATH}/bin/teuthology-suite --suite \"${suiteName}\" --machine-type openstack --ceph \"${branch}\" --ceph-repo https://github.com/ceph/ceph --limit 1 --job-threshold 1 --subset 1/10000 --sha1 ${sha1} ${OVERRIDE_YAML}"
-        def outFile = "${env.WORKSPACE}/suite_out.txt"
+        def safeName = suiteName.replaceAll('/', '_')
+        def outFile = "${env.WORKSPACE}/suite_out_${safeName}.txt"
         sh(script: "bash -c '${cmd}' > ${outFile} 2>&1; true", returnStatus: true)
         def out = readFile(outFile)
         def runName = null
@@ -218,12 +234,21 @@ def scheduleSuiteAndWait(String branch, String sha1, String suiteName) {
             def lineEnd = out.indexOf('\n', start)
             if (lineEnd < 0) lineEnd = out.length()
             def restOfLine = out.substring(start, lineEnd).trim()
-            // Run name is the first token (no spaces); output may add " and ID 1234" etc.
             runName = restOfLine.split()[0]
         }
         if (!runName) runName = "${sh(script: 'whoami', returnStdout: true).trim()}-${ts}-${suiteName.replaceAll('/', ':')}-${branch}-distro-default-openstack"
-        sleep(time: 15, unit: 'SECONDS')
-        sh(script: "${VIRTUALENV_PATH}/bin/teuthology-wait --run ${runName}", returnStatus: true)
         return runName
     }
+}
+
+/** Schedule one suite and wait for it (kept for reference; pipeline uses scheduleSuiteOnly + single wait loop). */
+def scheduleSuiteAndWait(String branch, String sha1, String suiteName) {
+    def runName = scheduleSuiteOnly(branch, sha1, suiteName)
+    if (runName) {
+        sleep(time: 15, unit: 'SECONDS')
+        dir(env.SCRIPT_DIR) {
+            sh(script: "${VIRTUALENV_PATH}/bin/teuthology-wait --run ${runName}", returnStatus: true)
+        }
+    }
+    return runName
 }
