@@ -1,0 +1,12 @@
+# Main branch suites from run-all-suites.sh
+# Use SUITE_LIST_SOURCE=config/suites_main.yaml with CEPH_BRANCH=main
+suites:
+  - teuthology:nop
+  - orch
+  - rbd
+  - fs
+  - rgw
+  - krbd
+  - upgrade
+  - crimson-rados
+  - rados

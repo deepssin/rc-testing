@@ -1,0 +1,13 @@
+# All suites from run-all-suites.sh (union of main + tentacle)
+# Use SUITE_LIST_SOURCE=config/suites_all.yaml for full run
+suites:
+  - teuthology:nop
+  - orch
+  - rbd
+  - fs
+  - rgw
+  - krbd
+  - upgrade
+  - crimson-rados
+  - crimson-rados/basic
+  - rados

@@ -1,0 +1,11 @@
+# Tentacle branch suites from run-all-suites.sh
+# Use SUITE_LIST_SOURCE=config/suites_tentacle.yaml with CEPH_BRANCH=tentacle
+suites:
+  - orch
+  - rbd
+  - fs
+  - rgw
+  - krbd
+  - crimson-rados/basic
+  - upgrade
+  - rados
