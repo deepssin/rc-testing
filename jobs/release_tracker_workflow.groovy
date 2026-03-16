@@ -21,6 +21,7 @@ pipelineJob('release_tracker_workflow') {
     parameters {
         stringParam("CEPH_REPO", "https://github.com/ceph/ceph.git", "Ceph repository URL")
         stringParam("CEPH_BRANCH", "reef", "Ceph branch (e.g. reef, tentacle)")
+        stringParam("CEPH_SHA1", "", "Optional: Ceph commit SHA1. If set, run on this SHA1 (must exist on Shaman). Empty = resolve from branch tip.")
         stringParam("RELEASE_VERSION", "20.1.0", "Release version")
         stringParam("TRACKER_ISSUE_ID", "", "Redmine tracker issue ID (e.g. 72316). Required when SKIP_TRACKER_UPDATE is false.")
         stringParam("BUILD_JOB_NAME", "sample-ceph-pipeline", "Jenkins job that builds Ceph RPMs")

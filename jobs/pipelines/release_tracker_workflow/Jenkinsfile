@@ -17,6 +17,7 @@ pipeline {
     parameters {
         string(name: 'CEPH_REPO', defaultValue: 'https://github.com/ceph/ceph.git')
         string(name: 'CEPH_BRANCH', defaultValue: 'reef')
+        string(name: 'CEPH_SHA1', defaultValue: '', description: 'Optional: Ceph commit SHA1 to use. If set, run on this SHA1 (must exist on Shaman). Empty = resolve from branch tip.')
         string(name: 'RELEASE_VERSION', defaultValue: '20.1.0')
         string(name: 'TRACKER_ISSUE_ID', defaultValue: '', description: 'Redmine tracker issue ID. Required when posting to tracker.')
         string(name: 'BUILD_JOB_NAME', defaultValue: 'sample-ceph-pipeline')
@@ -33,13 +34,18 @@ pipeline {
             steps {
                 checkout scm
                 script {
-                    dir("${env.CEPH_DIR}") {
-                        checkout([$class: "GitSCM", branches: [[name: "${params.CEPH_BRANCH}"]],
-                            extensions: [[$class: "CloneOption", depth: 1, shallow: true]],
-                            userRemoteConfigs: [[url: "${params.CEPH_REPO}"]]])
-                        env.SHA1 = sh(script: 'git rev-parse HEAD 2>/dev/null || echo "unknown"', returnStdout: true).trim()
+                    if (params.CEPH_SHA1?.trim()) {
+                        env.SHA1 = params.CEPH_SHA1.trim()
+                        echo "Using CEPH_SHA1: ${env.SHA1} (must exist on Shaman for branch ${params.CEPH_BRANCH})"
+                    } else {
+                        dir("${env.CEPH_DIR}") {
+                            checkout([$class: "GitSCM", branches: [[name: "${params.CEPH_BRANCH}"]],
+                                extensions: [[$class: "CloneOption", depth: 1, shallow: true]],
+                                userRemoteConfigs: [[url: "${params.CEPH_REPO}"]]])
+                            env.SHA1 = sh(script: 'git rev-parse HEAD 2>/dev/null || echo "unknown"', returnStdout: true).trim()
+                        }
+                        echo "Branch: ${params.CEPH_BRANCH} | SHA1: ${env.SHA1}"
                     }
-                    echo "Branch: ${params.CEPH_BRANCH} | SHA1: ${env.SHA1}"
                 }
             }
         }
@@ -88,7 +94,12 @@ pipeline {
             when { expression { return !params.SKIP_INTEGRATION_TESTS } }
             steps {
                 script {
-                    def suites = env.SUITE_LIST?.split(',')?.collect { it.trim() }?.findAll { it } ?: [params.SUITE_NAME]
+                    def defaultList = params.SUITE_NAME?.trim() ? [params.SUITE_NAME] : []
+                    def suites = env.SUITE_LIST?.split(',')?.collect { it.trim() }?.findAll { it } ?: defaultList
+                    suites = suites.findAll { it?.trim() }
+                    if (!suites) {
+                        error("No suites to run: SUITE_LIST resolved empty and SUITE_NAME is not set. Set SUITE_LIST_SOURCE (e.g. config/suites_tentacle.yaml) or SUITE_NAME.")
+                    }
                     def runInfos = []  // [suite, runName] for each scheduled run
                     // Trigger all suites at once (no wait between schedule calls)
                     for (suite in suites) {
@@ -219,6 +230,7 @@ def resolveSuiteList(String source, String defaultSuite, String branch, String v
 
 /** Schedule one suite (no wait). Returns run name or null. Uses --limit 1 for trial/testing. */
 def scheduleSuiteOnly(String branch, String sha1, String suiteName) {
+    if (!suiteName?.trim()) return null
     dir(env.SCRIPT_DIR) {
         def ts = sh(script: 'date "+%Y-%m-%d_%H:%M:%S"', returnStdout: true).trim()
         def cmd = "${VIRTUALENV_PATH}/bin/teuthology-suite --suite \"${suiteName}\" --machine-type openstack --ceph \"${branch}\" --ceph-repo https://github.com/ceph/ceph --limit 1 --job-threshold 1 --subset 1/10000 --sha1 ${sha1} ${OVERRIDE_YAML}"
